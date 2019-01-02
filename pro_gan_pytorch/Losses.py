@@ -106,39 +106,25 @@ class WGAN_GP(GANLoss):
         self.drift = drift
         self.use_gp = use_gp
 
-    def __gradient_penalty(self, real_samps, fake_samps,
-                           height, alpha, reg_lambda=10):
-        """
-        private helper for calculating the gradient penalty
-        :param real_samps: real samples
-        :param fake_samps: fake samples
-        :param height: current depth in the optimization
-        :param alpha: current alpha for fade-in
-        :param reg_lambda: regularisation lambda
-        :return: tensor (gradient penalty)
-        """
-        batch_size = real_samps.shape[0]
+    def __gradient_penalty(self, real_data, fake_data, height, alpha, reg_lambda=10):
+        batch_size = real_data.shape[0]
 
-        # generate random epsilon
-        epsilon = th.rand((batch_size, 1, 1, 1)).to(fake_samps.device)
+        epsilon = th.rand((batch_size, 1, 1, 1)).to(fake_data.device)
 
-        # create the merge of both real and fake samples
-        merged = (epsilon * real_samps) + ((1 - epsilon) * fake_samps)
-        merged.requires_grad = True
+        interpolates = epsilon * real_data + ((1 - epsilon) * fake_data)
 
-        # forward pass
-        op = self.dis(merged, height, alpha)
+        interpolates = interpolates.cuda(fake_data.device)
+        interpolates = th.autograd.Variable(interpolates, requires_grad=True)
 
-        # perform backward pass from op to merged for obtaining the gradients
-        op.backward(gradient=th.ones_like(op), create_graph=True)
-        gradient = merged.grad  # this is the gradient of the op wrt. merged
+        disc_interpolates = self.dis(interpolates, height, alpha)
 
-        # calculate the penalty using these gradients
-        gradient = gradient.view(gradient.shape[0], -1)
-        penalty = reg_lambda * ((gradient.norm(p=2, dim=1) - 1) ** 2).mean()
+        gradients = th.autograd.grad(outputs=disc_interpolates, inputs=interpolates,
+                                     grad_outputs=th.ones(disc_interpolates.size()).cuda(fake_data.device),
+                                     create_graph=True, retain_graph=True, only_inputs=True)[0]
+        gradients = gradients.view(gradients.size(0), -1)
 
-        # return the calculated penalty:
-        return penalty
+        gradient_penalty = ((gradients.norm(2, dim=1) - 1) ** 2).mean() * reg_lambda
+        return gradient_penalty
 
     def dis_loss(self, real_samps, fake_samps, height, alpha):
         # define the (Wasserstein) loss
